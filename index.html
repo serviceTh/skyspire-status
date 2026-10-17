@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SKYSPIRE</title>
+<meta name="description" content="ทางเข้าเกม SKYSPIRE: เช็คว่าเซิร์ฟเปิดอยู่ไหม แล้วพาเข้าเกม">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231e3a8a'/%3E%3Cpath d='M32 10 L40 46 L32 54 L24 46 Z' fill='%23f59e0b'/%3E%3C/svg%3E">
+<style>
+  /* SKYSPIRE entrance: published by scripts/publish-status.mjs together with link.json {url, since, kind} */
+  :root {
+    --bg: #0b1020; --card: rgba(248, 250, 252, 0.96); --ink: #1f2937; --ink-soft: #64748b;
+    --accent: #f59e0b; --sky: #1e3a8a; --good: #16a34a; --bad: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    min-height: 100vh; display: grid; place-items: center; padding: 16px;
+    background: radial-gradient(120% 80% at 50% 0%, #1e3a8a 0%, var(--bg) 70%);
+    font-family: "Noto Sans Thai", "Leelawadee UI", "Thonburi", "Tahoma", system-ui, sans-serif;
+    color: var(--ink);
+  }
+  .card {
+    width: min(440px, 100%); background: var(--card); border-radius: 22px; padding: 28px 24px 22px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45); text-align: center;
+  }
+  h1 { margin: 0 0 4px; font-size: 1.9rem; letter-spacing: 0.08em; color: var(--sky); }
+  .tag { margin: 0 0 22px; color: var(--ink-soft); font-size: 0.95rem; }
+  .dot { width: 18px; height: 18px; border-radius: 50%; display: inline-block; vertical-align: -2px; margin-right: 8px; background: #94a3b8; }
+  .up .dot { background: var(--good); box-shadow: 0 0 0 6px rgba(22, 163, 74, 0.18); }
+  .down .dot { background: var(--bad); box-shadow: 0 0 0 6px rgba(220, 38, 38, 0.15); }
+  .checking .dot { animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.3; } }
+  .state { font-size: 1.35rem; font-weight: 700; margin: 0 0 8px; }
+  .hint { margin: 0 0 20px; color: var(--ink-soft); line-height: 1.6; font-size: 1rem; }
+  .btn {
+    display: block; width: 100%; min-height: 60px; border: 0; border-radius: 16px; cursor: pointer;
+    font: inherit; font-size: 1.3rem; font-weight: 700; text-decoration: none; line-height: 60px;
+    background: var(--accent); color: #1f1300; box-shadow: 0 6px 0 #b45309;
+  }
+  .btn:active { transform: translateY(3px); box-shadow: 0 3px 0 #b45309; }
+  .btn.quiet { background: #e2e8f0; color: var(--ink); box-shadow: 0 6px 0 #94a3b8; font-size: 1.1rem; }
+  .small { margin-top: 16px; font-size: 0.85rem; color: var(--ink-soft); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main class="card checking" id="card">
+  <h1>SKYSPIRE</h1>
+  <p class="tag">ทางเข้าเกม · เก็บลิงก์นี้ไว้ได้ตลอด</p>
+  <p class="state"><span class="dot"></span><span id="state">กำลังเช็คเซิร์ฟ…</span></p>
+  <p class="hint" id="hint">รอสักครู่</p>
+  <a class="btn" id="play" hidden>เข้าเล่น</a>
+  <button class="btn quiet" id="retry" type="button" hidden>ลองใหม่</button>
+  <p class="small" id="small"></p>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const RETRY_S = 15;
+  let timer = 0;
+
+  function when(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return '';
+    return d.toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', dateStyle: 'medium', timeStyle: 'short' }) + ' น.';
+  }
+
+  function show(kind, state, hint, small) {
+    $('card').className = 'card ' + kind;
+    $('state').textContent = state;
+    $('hint').textContent = hint;
+    $('small').textContent = small || '';
+  }
+
+  async function getLink() {
+    // the query string skips every cache: a new link shows up as soon as GitHub Pages has it
+    const r = await fetch('link.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) throw new Error('no link');
+    return r.json();
+  }
+
+  async function alive(url) {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 6000);
+    try {
+      const r = await fetch(url.replace(/\/+$/, '') + '/health?t=' + Date.now(), { cache: 'no-store', signal: ctl.signal });
+      return r.ok && (await r.text()).trim() === 'ok';
+    } catch {
+      return false; // off, tunnel gone, Cloudflare error page (no CORS) or too slow
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  async function check() {
+    clearTimeout(timer);
+    $('play').hidden = true;
+    $('retry').hidden = true;
+    show('checking', 'กำลังเช็คเซิร์ฟ…', 'รอสักครู่');
+    let link;
+    try {
+      link = await getLink();
+    } catch {
+      show('down', 'ยังไม่มีลิงก์เกม', 'เจ้าของเซิร์ฟยังไม่ได้เปิดเกมเลย ลองใหม่ภายหลังนะ');
+      $('retry').hidden = false;
+      timer = setTimeout(check, RETRY_S * 1000);
+      return;
+    }
+    if (link.url && (await alive(link.url))) {
+      show('up', 'เซิร์ฟเปิดอยู่', 'กำลังพาเข้าเกม… ถ้าไม่ไปเอง กดปุ่มด้านล่าง');
+      $('play').href = link.url;
+      $('play').hidden = false;
+      timer = setTimeout(() => location.replace(link.url), 2000);
+      return;
+    }
+    const cloud = link.kind === 'cloud';
+    show(
+      'down',
+      cloud ? 'เซิร์ฟยังไม่ตอบ' : 'เซิร์ฟยังไม่เปิด (คอมปิดอยู่)',
+      cloud ? 'อาจกำลังอัปเดตเกม ลองใหม่อีกสักครู่นะ' : 'ลองใหม่ภายหลังนะ หน้านี้จะเช็คให้เองทุก ' + RETRY_S + ' วินาที',
+      link.since ? 'เปิดเซิร์ฟครั้งล่าสุด ' + when(link.since) : '',
+    );
+    $('retry').hidden = false;
+    timer = setTimeout(check, RETRY_S * 1000);
+  }
+
+  $('retry').addEventListener('click', check);
+  // a tab left open in the background checks again when the player comes back
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && !$('retry').hidden) check(); });
+  check();
+</script>
+</body>
+</html>
